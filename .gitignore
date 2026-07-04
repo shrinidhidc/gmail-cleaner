@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Virtual Environment
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# Logs
+logs/*.log
+
+# SQLite
+data/*.db
+data/*.sqlite
+
+# Gmail Credentials
+credentials/
+
+# Misc
+*.swp
