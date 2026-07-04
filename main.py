@@ -1,45 +1,72 @@
-from auth import authenticate
-from gmail_service import get_gmail_service
-from database import initialize_database
-from label_analyzer import print_labels
-from email_analyzer import list_recent_messages
-from sync_engine import fetch_message_ids
+"""
+===========================================================================
+MailCleaner
+
+Module:
+    Main
+
+Purpose:
+    Executable entry point for MailCleaner.
+
+Author:
+    Shrinidhi D C
+
+Version:
+    0.2.0
+===========================================================================
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import Final
+
+import application
+from console import console
+from logger import get_logger, setup_logger
+
+EXIT_SUCCESS: Final[int] = 0
+EXIT_UNEXPECTED_ERROR: Final[int] = 99
+
+logger = get_logger(__name__)
 
 
-def main():
-    print("=" * 50)
-    print(" Gmail Cleaner")
-    print("=" * 50)
+def main() -> int:
+    """
+    Run MailCleaner and return a process exit code.
 
-    # Authenticate
-    creds = authenticate()
+    Returns
+    -------
+    int
+        Process exit code returned by the application layer.
+    """
 
-    # Initialize database
-    initialize_database()
+    setup_logger()
+    logger.info("MailCleaner process starting.")
 
-    # Create Gmail service
-    service = get_gmail_service(creds)
+    try:
+        exit_code = application.main()
 
-    # Get Gmail profile
-    profile = service.users().getProfile(userId="me").execute()
+        logger.info(
+            "MailCleaner process completed. exit_code=%s",
+            exit_code,
+        )
 
-    print(f"Connected to      : {profile['emailAddress']}")
-    print(f"Total Messages    : {profile['messagesTotal']}")
-    print(f"Total Threads     : {profile['threadsTotal']}")
+        return exit_code
 
-    # Display Gmail Labels
-    print_labels(service)
+    except KeyboardInterrupt:
+        logger.warning("MailCleaner process interrupted by user.")
+        console.warning("MailCleaner interrupted by user.")
+        return EXIT_SUCCESS
 
-    # Display Recent Emails
-    list_recent_messages(service)
+    except Exception as ex:
+        logger.exception("Unhandled top-level MailCleaner error.")
+        console.error(f"Unexpected fatal error: {ex}")
+        return EXIT_UNEXPECTED_ERROR
 
-    # Fetch latest message IDs
-    messages = fetch_message_ids(service)
-
-    print(f"\nFetched {len(messages)} message IDs.")
-
-    print("\n✅ Authentication Successful")
+    finally:
+        logger.info("MailCleaner process stopped.")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
