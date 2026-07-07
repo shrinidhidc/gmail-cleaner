@@ -1,8 +1,6 @@
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 
 # macOS
 .DS_Store
@@ -15,14 +13,12 @@ venv/
 .idea/
 
 # Logs
-logs/*.log
+logs/
+*.log
 
-# SQLite
+# Data
 data/*.db
 data/*.sqlite
 
 # Gmail Credentials
 credentials/
-
-# Misc
-*.swp

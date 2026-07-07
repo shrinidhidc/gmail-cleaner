@@ -23,6 +23,29 @@ class GmailProfile:
 
 
 @dataclass(slots=True)
+class EmailMetadata:
+    """
+    Represents Gmail email metadata stored locally.
+    """
+
+    gmail_id: str
+    thread_id: Optional[str] = None
+    history_id: Optional[str] = None
+    internal_date: Optional[int] = None
+    label_ids: Optional[str] = None
+    sender: Optional[str] = None
+    recipient: Optional[str] = None
+    subject: Optional[str] = None
+    date_header: Optional[str] = None
+    snippet: Optional[str] = None
+    size_estimate: Optional[int] = None
+    is_read: int = 0
+    is_starred: int = 0
+    is_important: int = 0
+    last_synced: Optional[str] = None
+
+
+@dataclass(slots=True)
 class SyncStatistics:
     """
     Metadata synchronization statistics.

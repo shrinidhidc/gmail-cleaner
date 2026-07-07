@@ -293,6 +293,27 @@ class SyncEngine:
         try:
             message = self._get_message(message_id)
             metadata = self._build_metadata(message)
+
+            self.database_manager.save_email_metadata(
+                {
+                    "gmail_id": metadata.gmail_id,
+                    "thread_id": metadata.thread_id,
+                    "history_id": metadata.history_id,
+                    "internal_date": metadata.internal_date,
+                    "label_ids": metadata.labels,
+                    "sender": metadata.sender,
+                    "recipient": metadata.recipient,
+                    "subject": metadata.subject,
+                    "date_header": metadata.received_at,
+                    "snippet": metadata.snippet,
+                    "size_estimate": metadata.size_estimate,
+                    "is_read": 0,
+                    "is_starred": 0,
+                    "is_important": 0,
+                    "last_synced": _utc_now(),
+                }
+            )
+
             was_inserted = self._upsert_message(connection, metadata)
 
             statistics.processed += 1

@@ -1,18 +1,77 @@
 """
 MailCleaner Database Module
 
-Handles SQLite database creation and connectivity.
+Handles SQLite database creation, migration, and connectivity.
 """
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Optional, TypeVar
 
 import config
 from logger import get_logger
+from models import EmailMetadata
 
 logger = get_logger(__name__)
+
+T = TypeVar("T")
+
+EMAIL_COLUMNS: tuple[str, ...] = (
+    "gmail_id",
+    "thread_id",
+    "history_id",
+    "internal_date",
+    "label_ids",
+    "sender",
+    "recipient",
+    "subject",
+    "date_header",
+    "snippet",
+    "size_estimate",
+    "is_read",
+    "is_starred",
+    "is_important",
+    "last_synced",
+)
+
+EMAIL_UPDATE_COLUMNS: tuple[str, ...] = (
+    "thread_id",
+    "history_id",
+    "internal_date",
+    "label_ids",
+    "sender",
+    "recipient",
+    "subject",
+    "date_header",
+    "snippet",
+    "size_estimate",
+    "is_read",
+    "is_starred",
+    "is_important",
+    "last_synced",
+)
+
+EMAIL_COLUMN_DEFINITIONS: dict[str, str] = {
+    "gmail_id": "TEXT",
+    "thread_id": "TEXT",
+    "history_id": "TEXT",
+    "internal_date": "INTEGER",
+    "label_ids": "TEXT",
+    "sender": "TEXT",
+    "recipient": "TEXT",
+    "subject": "TEXT",
+    "date_header": "TEXT",
+    "snippet": "TEXT",
+    "size_estimate": "INTEGER",
+    "is_read": "INTEGER DEFAULT 0",
+    "is_starred": "INTEGER DEFAULT 0",
+    "is_important": "INTEGER DEFAULT 0",
+    "last_synced": "TIMESTAMP",
+}
 
 
 class DatabaseManager:
@@ -22,123 +81,694 @@ class DatabaseManager:
 
     def __init__(self) -> None:
         self.database_path: Path = config.DATABASE_PATH
+        self._connection: Optional[sqlite3.Connection] = None
 
     def connect(self) -> sqlite3.Connection:
         """
         Open a SQLite connection.
         """
-        connection = sqlite3.connect(self.database_path)
 
-        connection.row_factory = sqlite3.Row
+        try:
+            connection = sqlite3.connect(self.database_path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            return connection
 
-        connection.execute("PRAGMA foreign_keys = ON")
-
-        return connection
+        except sqlite3.Error as ex:
+            logger.exception("Failed to open database connection.")
+            raise RuntimeError("Failed to open database connection.") from ex
 
     def initialize(self) -> None:
         """
-        Create database schema if it does not exist.
+        Create or migrate database schema if it does not exist.
         """
+
         logger.info("Initializing database...")
 
-        with self.connect() as connection:
-            cursor = connection.cursor()
+        try:
+            with self.connect() as connection:
+                cursor = connection.cursor()
 
-            # ----------------------------------------------------------
-            # Messages
-            # ----------------------------------------------------------
+                self._create_messages_table(cursor)
+                self._create_senders_table(cursor)
+                self._create_sync_state_table(cursor)
+                self._create_emails_table(cursor)
+                self._migrate_emails_table(connection)
+                self._create_emails_indexes(cursor)
 
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
+                connection.commit()
 
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                    gmail_id TEXT UNIQUE NOT NULL,
-
-                    thread_id TEXT,
-
-                    sender TEXT,
-
-                    recipient TEXT,
-
-                    subject TEXT,
-
-                    received_at TEXT,
-
-                    labels TEXT,
-
-                    snippet TEXT,
-
-                    history_id TEXT,
-
-                    internal_date INTEGER,
-
-                    size_estimate INTEGER,
-
-                    category TEXT,
-
-                    sync_status TEXT,
-
-                    last_updated TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_messages_sender
-                ON messages(sender)
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_messages_category
-                ON messages(category)
-                """
-            )
-
-            # ----------------------------------------------------------
-            # Senders
-            # ----------------------------------------------------------
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS senders (
-
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                    email TEXT UNIQUE NOT NULL,
-
-                    display_name TEXT,
-
-                    message_count INTEGER DEFAULT 0,
-
-                    category TEXT,
-
-                    first_seen TEXT,
-
-                    last_seen TEXT
-                )
-                """
-            )
-
-            # ----------------------------------------------------------
-            # Sync State
-            # ----------------------------------------------------------
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS sync_state (
-
-                    key TEXT PRIMARY KEY,
-
-                    value TEXT
-                )
-                """
-            )
-
-            connection.commit()
+        except sqlite3.Error as ex:
+            logger.exception("Database initialization failed.")
+            raise RuntimeError("Database initialization failed.") from ex
 
         logger.info("Database initialized successfully.")
+
+    def save_email_metadata(self, email: dict[str, Any]) -> None:
+        """
+        Insert or update email metadata using the existing UPSERT helper.
+
+        Parameters
+        ----------
+        email : dict[str, Any]
+            Email metadata payload to persist.
+        """
+
+        if not isinstance(email, dict):
+            raise TypeError("email must be a dictionary.")
+
+        gmail_id = email.get("gmail_id")
+
+        try:
+            self.upsert_email_metadata(email)
+            logger.debug("Saved email metadata. gmail_id=%s", gmail_id)
+
+        except Exception:
+            logger.exception("Failed to save email metadata. gmail_id=%s", gmail_id)
+            raise
+
+    def insert_email(self, email: EmailMetadata | Mapping[str, Any]) -> int:
+        """
+        Insert one email metadata row.
+
+        Parameters
+        ----------
+        email : EmailMetadata | Mapping[str, Any]
+            Email metadata to insert.
+
+        Returns
+        -------
+        int
+            Inserted row ID.
+        """
+
+        data = self._normalize_email_data(email)
+        placeholders = ", ".join("?" for _ in EMAIL_COLUMNS)
+        column_list = ", ".join(EMAIL_COLUMNS)
+        values = tuple(data.get(column) for column in EMAIL_COLUMNS)
+
+        query = f"""
+            INSERT INTO emails ({column_list})
+            VALUES ({placeholders})
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(query, values)
+            row_id = int(cursor.lastrowid)
+            logger.info("Inserted email metadata. gmail_id=%s", data["gmail_id"])
+            return row_id
+
+        return self._execute_write(operation)
+
+    def upsert_email_metadata(
+        self,
+        email: EmailMetadata | Mapping[str, Any],
+    ) -> int:
+        """
+        Insert or update one email metadata row using an UPSERT.
+
+        Parameters
+        ----------
+        email : EmailMetadata | Mapping[str, Any]
+            Email metadata to persist.
+
+        Returns
+        -------
+        int
+            Number of rows inserted or updated.
+        """
+
+        data = self._normalize_email_data(email)
+        column_list = ", ".join(EMAIL_COLUMNS)
+        placeholders = ", ".join("?" for _ in EMAIL_COLUMNS)
+        update_assignments = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in EMAIL_UPDATE_COLUMNS
+        )
+        values = tuple(data.get(column) for column in EMAIL_COLUMNS)
+
+        query = f"""
+            INSERT INTO emails ({column_list})
+            VALUES ({placeholders})
+            ON CONFLICT(gmail_id) DO UPDATE
+            SET {update_assignments}
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(query, values)
+            row_count = (
+                int(cursor.rowcount)
+                if cursor.rowcount not in (None, -1)
+                else 1
+            )
+            logger.info("Upserted email metadata. gmail_id=%s", data["gmail_id"])
+            return row_count
+
+        return self._execute_write(operation)
+
+    def upsert_email_metadata_batch(
+        self,
+        emails: Iterable[EmailMetadata | Mapping[str, Any]],
+    ) -> int:
+        """
+        Insert or update multiple email metadata rows within a transaction.
+
+        Parameters
+        ----------
+        emails : Iterable[EmailMetadata | Mapping[str, Any]]
+            Email metadata rows to persist.
+
+        Returns
+        -------
+        int
+            Number of rows inserted or updated.
+        """
+
+        email_list = list(emails)
+
+        if not email_list:
+            return 0
+
+        self.begin_transaction()
+
+        try:
+            total_rows = 0
+
+            for email in email_list:
+                total_rows += self.upsert_email_metadata(email)
+
+            self.commit()
+            logger.info("Upserted %s email metadata rows.", total_rows)
+            return total_rows
+
+        except Exception:
+            self.rollback()
+            raise
+
+    def update_email(
+        self,
+        gmail_id: str,
+        email: EmailMetadata | Mapping[str, Any],
+    ) -> bool:
+        """
+        Update one email metadata row by Gmail ID.
+
+        Parameters
+        ----------
+        gmail_id : str
+            Gmail message ID.
+        email : EmailMetadata | Mapping[str, Any]
+            Email metadata fields to update.
+
+        Returns
+        -------
+        bool
+            True if a row was updated.
+        """
+
+        if not gmail_id:
+            raise ValueError("gmail_id is required.")
+
+        data = self._normalize_partial_email_data(email)
+        assignments = [
+            f"{column} = ?"
+            for column in EMAIL_UPDATE_COLUMNS
+            if column in data
+        ]
+
+        if not assignments:
+            logger.warning("No email metadata fields supplied for update.")
+            return False
+
+        values = tuple(
+            data[column]
+            for column in EMAIL_UPDATE_COLUMNS
+            if column in data
+        )
+        query = f"""
+            UPDATE emails
+            SET {", ".join(assignments)}
+            WHERE gmail_id = ?
+        """
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(query, (*values, gmail_id))
+            updated = cursor.rowcount > 0
+
+            if updated:
+                logger.info("Updated email metadata. gmail_id=%s", gmail_id)
+            else:
+                logger.info("No email metadata row found. gmail_id=%s", gmail_id)
+
+            return updated
+
+        return self._execute_write(operation)
+
+    def email_exists(self, gmail_id: str) -> bool:
+        """
+        Return whether an email exists by Gmail ID.
+        """
+
+        if not gmail_id:
+            raise ValueError("gmail_id is required.")
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                """
+                SELECT 1
+                FROM emails
+                WHERE gmail_id = ?
+                LIMIT 1
+                """,
+                (gmail_id,),
+            )
+
+            return cursor.fetchone() is not None
+
+        return self._execute_read(operation)
+
+    def get_total_email_count(self) -> int:
+        """
+        Return the total number of email metadata rows.
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM emails
+                """
+            )
+            row = cursor.fetchone()
+            return int(row["total"])
+
+        return self._execute_read(operation)
+
+    def begin_transaction(self) -> None:
+        """
+        Begin an explicit database transaction.
+        """
+
+        if self._connection is None:
+            self._connection = self.connect()
+
+        try:
+            if not self._connection.in_transaction:
+                self._connection.execute("BEGIN")
+                logger.info("Database transaction started.")
+
+        except sqlite3.Error as ex:
+            logger.exception("Failed to begin database transaction.")
+            raise RuntimeError("Failed to begin database transaction.") from ex
+
+    def commit(self) -> None:
+        """
+        Commit the active transaction.
+        """
+
+        if self._connection is None:
+            logger.warning("Commit requested with no active database connection.")
+            return
+
+        try:
+            self._connection.commit()
+            logger.info("Database transaction committed.")
+
+        except sqlite3.Error as ex:
+            logger.exception("Failed to commit database transaction.")
+            raise RuntimeError("Failed to commit database transaction.") from ex
+
+    def rollback(self) -> None:
+        """
+        Roll back the active transaction.
+        """
+
+        if self._connection is None:
+            logger.warning("Rollback requested with no active database connection.")
+            return
+
+        try:
+            self._connection.rollback()
+            logger.info("Database transaction rolled back.")
+
+        except sqlite3.Error as ex:
+            logger.exception("Failed to roll back database transaction.")
+            raise RuntimeError("Failed to roll back database transaction.") from ex
+
+    def close(self) -> None:
+        """
+        Close the active managed database connection.
+        """
+
+        if self._connection is None:
+            return
+
+        try:
+            self._connection.close()
+            logger.info("Database connection closed.")
+
+        except sqlite3.Error as ex:
+            logger.exception("Failed to close database connection.")
+            raise RuntimeError("Failed to close database connection.") from ex
+
+        finally:
+            self._connection = None
+
+    @staticmethod
+    def _create_messages_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the legacy messages table.
+        """
+
+        logger.info("Creating messages table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                gmail_id TEXT UNIQUE NOT NULL,
+
+                thread_id TEXT,
+
+                sender TEXT,
+
+                recipient TEXT,
+
+                subject TEXT,
+
+                received_at TEXT,
+
+                labels TEXT,
+
+                snippet TEXT,
+
+                history_id TEXT,
+
+                internal_date INTEGER,
+
+                size_estimate INTEGER,
+
+                category TEXT,
+
+                sync_status TEXT,
+
+                last_updated TEXT
+            )
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_sender
+            ON messages(sender)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_messages_category
+            ON messages(category)
+            """
+        )
+
+    @staticmethod
+    def _create_senders_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the senders table.
+        """
+
+        logger.info("Creating senders table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS senders (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                email TEXT UNIQUE NOT NULL,
+
+                display_name TEXT,
+
+                message_count INTEGER DEFAULT 0,
+
+                category TEXT,
+
+                first_seen TEXT,
+
+                last_seen TEXT
+            )
+            """
+        )
+
+    @staticmethod
+    def _create_sync_state_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the sync state table.
+        """
+
+        logger.info("Creating sync_state table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_state (
+
+                key TEXT PRIMARY KEY,
+
+                value TEXT
+            )
+            """
+        )
+
+    @staticmethod
+    def _create_emails_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the emails metadata table.
+        """
+
+        logger.info("Creating emails table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS emails (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                gmail_id TEXT UNIQUE NOT NULL,
+
+                thread_id TEXT,
+
+                history_id TEXT,
+
+                internal_date INTEGER,
+
+                label_ids TEXT,
+
+                sender TEXT,
+
+                recipient TEXT,
+
+                subject TEXT,
+
+                date_header TEXT,
+
+                snippet TEXT,
+
+                size_estimate INTEGER,
+
+                is_read INTEGER DEFAULT 0,
+
+                is_starred INTEGER DEFAULT 0,
+
+                is_important INTEGER DEFAULT 0,
+
+                last_synced TIMESTAMP
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_emails_table(connection: sqlite3.Connection) -> None:
+        """
+        Add missing emails table columns for existing databases.
+        """
+
+        logger.info("Checking emails table migrations.")
+
+        cursor = connection.execute("PRAGMA table_info(emails)")
+        existing_columns = {
+            str(row["name"])
+            for row in cursor.fetchall()
+        }
+
+        for column, definition in EMAIL_COLUMN_DEFINITIONS.items():
+            if column in existing_columns:
+                continue
+
+            logger.info("Adding emails column. column=%s", column)
+
+            connection.execute(
+                f"""
+                ALTER TABLE emails
+                ADD COLUMN {column} {definition}
+                """
+            )
+
+    @staticmethod
+    def _create_emails_indexes(cursor: sqlite3.Cursor) -> None:
+        """
+        Create indexes used by future metadata synchronization.
+        """
+
+        logger.info("Creating emails indexes if needed.")
+
+        cursor.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_gmail_id
+            ON emails(gmail_id)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_emails_thread_id
+            ON emails(thread_id)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_emails_history_id
+            ON emails(history_id)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_emails_internal_date
+            ON emails(internal_date)
+            """
+        )
+
+    def _execute_read(
+        self,
+        operation: Callable[[sqlite3.Connection], T],
+    ) -> T:
+        """
+        Execute a read operation with managed error handling.
+        """
+
+        if self._connection is not None:
+            try:
+                return operation(self._connection)
+
+            except sqlite3.Error as ex:
+                logger.exception("Database read operation failed.")
+                raise RuntimeError("Database read operation failed.") from ex
+
+        try:
+            with self.connect() as connection:
+                return operation(connection)
+
+        except sqlite3.Error as ex:
+            logger.exception("Database read operation failed.")
+            raise RuntimeError("Database read operation failed.") from ex
+
+    def _execute_write(
+        self,
+        operation: Callable[[sqlite3.Connection], T],
+    ) -> T:
+        """
+        Execute a write operation with managed error handling.
+        """
+
+        if self._connection is not None:
+            try:
+                return operation(self._connection)
+
+            except sqlite3.Error as ex:
+                logger.exception("Database write operation failed.")
+                raise RuntimeError("Database write operation failed.") from ex
+
+        try:
+            with self.connect() as connection:
+                result = operation(connection)
+                connection.commit()
+                return result
+
+        except sqlite3.Error as ex:
+            logger.exception("Database write operation failed.")
+            raise RuntimeError("Database write operation failed.") from ex
+
+    @staticmethod
+    def _normalize_email_data(
+        email: EmailMetadata | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Normalize full email metadata for insertion.
+        """
+
+        data = DatabaseManager._metadata_to_dict(email)
+
+        if not data.get("gmail_id"):
+            raise ValueError("gmail_id is required.")
+
+        normalized = {
+            column: data.get(column)
+            for column in EMAIL_COLUMNS
+        }
+
+        normalized["is_read"] = int(bool(normalized.get("is_read", 0)))
+        normalized["is_starred"] = int(bool(normalized.get("is_starred", 0)))
+        normalized["is_important"] = int(bool(normalized.get("is_important", 0)))
+
+        if normalized.get("last_synced") is None:
+            normalized["last_synced"] = _utc_now()
+
+        return normalized
+
+    @staticmethod
+    def _normalize_partial_email_data(
+        email: EmailMetadata | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Normalize partial email metadata for updates.
+        """
+
+        data = DatabaseManager._metadata_to_dict(email)
+        normalized = {
+            column: data[column]
+            for column in EMAIL_UPDATE_COLUMNS
+            if column in data
+        }
+
+        for boolean_column in ("is_read", "is_starred", "is_important"):
+            if boolean_column in normalized:
+                normalized[boolean_column] = int(bool(normalized[boolean_column]))
+
+        if "last_synced" not in normalized:
+            normalized["last_synced"] = _utc_now()
+
+        return normalized
+
+    @staticmethod
+    def _metadata_to_dict(
+        email: EmailMetadata | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Convert email metadata input to a dictionary.
+        """
+
+        if isinstance(email, EmailMetadata):
+            return asdict(email)
+
+        return dict(email)
+
+
+def _utc_now() -> str:
+    """
+    Return the current UTC timestamp.
+    """
+
+    return datetime.now(UTC).isoformat()
