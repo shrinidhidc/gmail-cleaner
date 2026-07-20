@@ -46,6 +46,18 @@ class EmailMetadata:
 
 
 @dataclass(slots=True)
+class EmailContent:
+    """
+    Represents extracted Gmail message content.
+    """
+
+    gmail_id: str
+    plain_text: str
+    html_body: str
+    mime_type: str
+
+
+@dataclass(slots=True)
 class SyncStatistics:
     """
     Metadata synchronization statistics.
