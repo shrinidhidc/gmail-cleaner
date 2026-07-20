@@ -73,6 +73,25 @@ EMAIL_COLUMN_DEFINITIONS: dict[str, str] = {
     "last_synced": "TIMESTAMP",
 }
 
+EMAIL_CONTENT_COLUMNS: tuple[str, ...] = (
+    "id",
+    "gmail_id",
+    "plain_text",
+    "html_body",
+    "mime_type",
+    "content_size",
+    "extracted_at",
+)
+
+EMAIL_CONTENT_COLUMN_DEFINITIONS: dict[str, str] = {
+    "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+    "gmail_id": "TEXT UNIQUE NOT NULL",
+    "plain_text": "TEXT",
+    "html_body": "TEXT",
+    "mime_type": "TEXT",
+    "content_size": "INTEGER",
+    "extracted_at": "TIMESTAMP",
+}
 
 class DatabaseManager:
     """
@@ -115,6 +134,10 @@ class DatabaseManager:
                 self._create_emails_table(cursor)
                 self._migrate_emails_table(connection)
                 self._create_emails_indexes(cursor)
+
+                # Migrate email_content table
+                self._create_email_content_table(cursor)
+                self._migrate_email_content_table(connection)
 
                 connection.commit()
 
@@ -650,6 +673,63 @@ class DatabaseManager:
             ON emails(internal_date)
             """
         )
+
+    @staticmethod
+    def _create_email_content_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the email_content table if needed.
+        """
+
+        logger.info("Creating email_content table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_content (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gmail_id TEXT UNIQUE NOT NULL,
+                plain_text TEXT,
+                html_body TEXT,
+                mime_type TEXT,
+                content_size INTEGER,
+                extracted_at TIMESTAMP
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_email_content_table(connection: sqlite3.Connection) -> None:
+        """
+        Migrate email_content table for existing databases.
+        """
+
+        logger.info("Checking email_content table migrations.")
+
+        cursor = connection.execute("PRAGMA table_info(email_content)")
+        existing_columns = {
+            str(row["name"])
+            for row in cursor.fetchall()
+        }
+
+        safe_column_definitions = {
+            column: definition
+            for column, definition in EMAIL_CONTENT_COLUMN_DEFINITIONS.items()
+            if "PRIMARY KEY" not in definition
+            and "UNIQUE" not in definition
+            and "NOT NULL" not in definition
+        }
+
+        for column, definition in safe_column_definitions.items():
+            if column in existing_columns:
+                continue
+
+            logger.info("Adding email_content column. column=%s", column)
+
+            connection.execute(
+                f"""
+                ALTER TABLE email_content
+                ADD COLUMN {column} {definition}
+                """
+            )
 
     def _execute_read(
         self,
