@@ -58,6 +58,24 @@ class EmailContent:
 
 
 @dataclass(slots=True)
+class EmailAnalysis:
+    """
+    Represents persisted email analysis results.
+    """
+
+    gmail_id: str
+    sender_domain: Optional[str] = None
+    category: Optional[str] = None
+    importance: Optional[str] = None
+    has_unsubscribe: int = 0
+    has_attachment: int = 0
+    has_html: int = 0
+    confidence: Optional[float] = None
+    analyzed_by: Optional[str] = None
+    analyzed_at: Optional[str] = None
+
+
+@dataclass(slots=True)
 class SyncStatistics:
     """
     Metadata synchronization statistics.

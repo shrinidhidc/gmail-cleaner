@@ -14,7 +14,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional, TypeVar
 
 import config
 from logger import get_logger
-from models import EmailContent, EmailMetadata
+from models import EmailAnalysis, EmailContent, EmailMetadata
 
 logger = get_logger(__name__)
 
@@ -93,6 +93,44 @@ EMAIL_CONTENT_COLUMN_DEFINITIONS: dict[str, str] = {
     "extracted_at": "TIMESTAMP",
 }
 
+EMAIL_ANALYSIS_COLUMNS: tuple[str, ...] = (
+    "gmail_id",
+    "sender_domain",
+    "category",
+    "importance",
+    "has_unsubscribe",
+    "has_attachment",
+    "has_html",
+    "confidence",
+    "analyzed_by",
+    "analyzed_at",
+)
+
+EMAIL_ANALYSIS_UPDATE_COLUMNS: tuple[str, ...] = (
+    "sender_domain",
+    "category",
+    "importance",
+    "has_unsubscribe",
+    "has_attachment",
+    "has_html",
+    "confidence",
+    "analyzed_by",
+    "analyzed_at",
+)
+
+EMAIL_ANALYSIS_COLUMN_DEFINITIONS: dict[str, str] = {
+    "gmail_id": "TEXT PRIMARY KEY",
+    "sender_domain": "TEXT",
+    "category": "TEXT",
+    "importance": "TEXT",
+    "has_unsubscribe": "INTEGER DEFAULT 0",
+    "has_attachment": "INTEGER DEFAULT 0",
+    "has_html": "INTEGER DEFAULT 0",
+    "confidence": "REAL",
+    "analyzed_by": "TEXT",
+    "analyzed_at": "TIMESTAMP",
+}
+
 class DatabaseManager:
     """
     SQLite database manager.
@@ -138,6 +176,10 @@ class DatabaseManager:
                 # Migrate email_content table
                 self._create_email_content_table(cursor)
                 self._migrate_email_content_table(connection)
+
+                self._create_email_analysis_table(cursor)
+                self._migrate_email_analysis_table(connection)
+                self._create_email_analysis_indexes(cursor)
 
                 connection.commit()
 
@@ -245,6 +287,55 @@ class DatabaseManager:
 
         if connection is not None:
             return operation(connection)
+
+        return self._execute_write(operation)
+
+    def save_email_analysis(
+        self,
+        analysis: EmailAnalysis | Mapping[str, Any],
+    ) -> int:
+        """
+        Insert or update email analysis results.
+
+        Parameters
+        ----------
+        analysis : EmailAnalysis | Mapping[str, Any]
+            Email analysis results to persist.
+
+        Returns
+        -------
+        int
+            Number of rows inserted or updated.
+        """
+
+        data = self._normalize_email_analysis_data(analysis)
+        column_list = ", ".join(EMAIL_ANALYSIS_COLUMNS)
+        placeholders = ", ".join("?" for _ in EMAIL_ANALYSIS_COLUMNS)
+        update_assignments = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in EMAIL_ANALYSIS_UPDATE_COLUMNS
+        )
+        values = tuple(data.get(column) for column in EMAIL_ANALYSIS_COLUMNS)
+
+        query = f"""
+            INSERT INTO email_analysis ({column_list})
+            VALUES ({placeholders})
+            ON CONFLICT(gmail_id) DO UPDATE
+            SET {update_assignments}
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(query, values)
+            row_count = (
+                int(cursor.rowcount)
+                if cursor.rowcount not in (None, -1)
+                else 1
+            )
+            logger.info(
+                "Saved email analysis. gmail_id=%s",
+                data["gmail_id"],
+            )
+            return row_count
 
         return self._execute_write(operation)
 
@@ -475,6 +566,119 @@ class DatabaseManager:
 
         if connection is not None:
             return operation(connection)
+
+        return self._execute_read(operation)
+
+    def analysis_exists(self, gmail_id: str) -> bool:
+        """
+        Return whether email analysis exists by Gmail ID.
+        """
+
+        if not gmail_id:
+            raise ValueError("gmail_id is required.")
+
+        def operation(connection: sqlite3.Connection) -> bool:
+            cursor = connection.execute(
+                """
+                SELECT 1
+                FROM email_analysis
+                WHERE gmail_id = ?
+                LIMIT 1
+                """,
+                (gmail_id,),
+            )
+
+            return cursor.fetchone() is not None
+
+        return self._execute_read(operation)
+
+    def get_email_analysis(self, gmail_id: str) -> EmailAnalysis | None:
+        """
+        Return email analysis results by Gmail ID.
+        """
+
+        if not gmail_id:
+            raise ValueError("gmail_id is required.")
+
+        def operation(connection: sqlite3.Connection) -> EmailAnalysis | None:
+            cursor = connection.execute(
+                """
+                SELECT gmail_id, sender_domain, category, importance,
+                       has_unsubscribe, has_attachment, has_html,
+                       confidence, analyzed_by, analyzed_at
+                FROM email_analysis
+                WHERE gmail_id = ?
+                """,
+                (gmail_id,),
+            )
+            row = cursor.fetchone()
+
+            if row is None:
+                return None
+
+            return EmailAnalysis(
+                gmail_id=str(row["gmail_id"]),
+                sender_domain=row["sender_domain"],
+                category=row["category"],
+                importance=row["importance"],
+                has_unsubscribe=int(row["has_unsubscribe"]),
+                has_attachment=int(row["has_attachment"]),
+                has_html=int(row["has_html"]),
+                confidence=row["confidence"],
+                analyzed_by=row["analyzed_by"],
+                analyzed_at=row["analyzed_at"],
+            )
+
+        return self._execute_read(operation)
+
+    def get_unanalyzed_emails(self, limit: int) -> list[EmailMetadata]:
+        """
+        Return email metadata rows without persisted analysis results.
+        """
+
+        if limit <= 0:
+            return []
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> list[EmailMetadata]:
+            cursor = connection.execute(
+                """
+                SELECT e.gmail_id, e.thread_id, e.history_id,
+                       e.internal_date, e.label_ids, e.sender,
+                       e.recipient, e.subject, e.date_header,
+                       e.snippet, e.size_estimate, e.is_read,
+                       e.is_starred, e.is_important, e.last_synced
+                FROM emails AS e
+                LEFT JOIN email_analysis AS a
+                    ON a.gmail_id = e.gmail_id
+                WHERE a.gmail_id IS NULL
+                ORDER BY e.internal_date DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+
+            return [
+                EmailMetadata(
+                    gmail_id=str(row["gmail_id"]),
+                    thread_id=row["thread_id"],
+                    history_id=row["history_id"],
+                    internal_date=row["internal_date"],
+                    label_ids=row["label_ids"],
+                    sender=row["sender"],
+                    recipient=row["recipient"],
+                    subject=row["subject"],
+                    date_header=row["date_header"],
+                    snippet=row["snippet"],
+                    size_estimate=row["size_estimate"],
+                    is_read=int(row["is_read"]),
+                    is_starred=int(row["is_starred"]),
+                    is_important=int(row["is_important"]),
+                    last_synced=row["last_synced"],
+                )
+                for row in cursor.fetchall()
+            ]
 
         return self._execute_read(operation)
 
@@ -846,6 +1050,84 @@ class DatabaseManager:
                 """
             )
 
+    @staticmethod
+    def _create_email_analysis_table(cursor: sqlite3.Cursor) -> None:
+        """
+        Create the email_analysis table if needed.
+        """
+
+        logger.info("Creating email_analysis table if needed.")
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_analysis (
+                gmail_id TEXT PRIMARY KEY,
+                sender_domain TEXT,
+                category TEXT,
+                importance TEXT,
+                has_unsubscribe INTEGER DEFAULT 0,
+                has_attachment INTEGER DEFAULT 0,
+                has_html INTEGER DEFAULT 0,
+                confidence REAL,
+                analyzed_by TEXT,
+                analyzed_at TIMESTAMP,
+                FOREIGN KEY(gmail_id) REFERENCES emails(gmail_id)
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_email_analysis_table(connection: sqlite3.Connection) -> None:
+        """
+        Add missing email_analysis columns for existing databases.
+        """
+
+        logger.info("Checking email_analysis table migrations.")
+
+        cursor = connection.execute("PRAGMA table_info(email_analysis)")
+        existing_columns = {
+            str(row["name"])
+            for row in cursor.fetchall()
+        }
+
+        for column, definition in EMAIL_ANALYSIS_COLUMN_DEFINITIONS.items():
+            if column in existing_columns:
+                continue
+
+            if "PRIMARY KEY" in definition or "NOT NULL" in definition:
+                continue
+
+            logger.info("Adding email_analysis column. column=%s", column)
+
+            connection.execute(
+                f"""
+                ALTER TABLE email_analysis
+                ADD COLUMN {column} {definition}
+                """
+            )
+
+    @staticmethod
+    def _create_email_analysis_indexes(cursor: sqlite3.Cursor) -> None:
+        """
+        Create indexes used by email analysis queries.
+        """
+
+        logger.info("Creating email_analysis indexes if needed.")
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_analysis_sender_domain
+            ON email_analysis(sender_domain)
+            """
+        )
+
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_analysis_category
+            ON email_analysis(category)
+            """
+        )
+
     def _execute_read(
         self,
         operation: Callable[[sqlite3.Connection], T],
@@ -948,6 +1230,39 @@ class DatabaseManager:
         return normalized
 
     @staticmethod
+    def _normalize_email_analysis_data(
+        analysis: EmailAnalysis | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Normalize full email analysis data for insertion.
+        """
+
+        data = DatabaseManager._analysis_to_dict(analysis)
+
+        if not data.get("gmail_id"):
+            raise ValueError("gmail_id is required.")
+
+        normalized = {
+            column: data.get(column)
+            for column in EMAIL_ANALYSIS_COLUMNS
+        }
+
+        for boolean_column in (
+            "has_unsubscribe",
+            "has_attachment",
+            "has_html",
+        ):
+            normalized[boolean_column] = int(
+                bool(normalized.get(boolean_column, 0))
+            )
+
+        if normalized.get("analyzed_at") is None:
+            normalized["analyzed_at"] = _utc_now()
+
+        return normalized
+
+    @staticmethod
+    @staticmethod
     def _metadata_to_dict(
         email: EmailMetadata | Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -959,6 +1274,19 @@ class DatabaseManager:
             return asdict(email)
 
         return dict(email)
+
+    @staticmethod
+    def _analysis_to_dict(
+        analysis: EmailAnalysis | Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Convert email analysis input to a dictionary.
+        """
+
+        if isinstance(analysis, EmailAnalysis):
+            return asdict(analysis)
+
+        return dict(analysis)
 
 
 def _utc_now() -> str:
