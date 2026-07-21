@@ -47,7 +47,6 @@ SYNC_STATE_LAST_HISTORY_ID: Final[str] = "last_history_id"
 SYNC_STATE_LAST_SYNC_STARTED_AT: Final[str] = "last_sync_started_at"
 SYNC_STATE_LAST_SYNC_COMPLETED_AT: Final[str] = "last_sync_completed_at"
 SYNC_STATE_LAST_SYNC_MODE: Final[str] = "last_sync_mode"
-CONTENT_SYNC_LIMIT: Final[int] = 10
 
 RETRYABLE_HTTP_STATUSES: Final[set[int]] = {
     429,
@@ -125,7 +124,6 @@ class SyncEngine:
 
         started_at = _utc_now()
         statistics = SyncStatistics()
-        content_sync_count = 0
 
         logger.info("Starting Gmail metadata synchronization.")
         self._report_progress(statistics)
@@ -152,15 +150,11 @@ class SyncEngine:
                 query=query,
                 page_size=page_size,
             ):
-                content_processed = self._sync_single_message(
+                self._sync_single_message(
                     connection=connection,
                     message_id=message_id,
                     statistics=statistics,
-                    sync_content=content_sync_count < CONTENT_SYNC_LIMIT,
                 )
-
-                if content_processed:
-                    content_sync_count += 1
 
             completed_at = _utc_now()
             self._set_sync_state(
@@ -300,13 +294,11 @@ class SyncEngine:
         connection: sqlite3.Connection,
         message_id: str,
         statistics: SyncStatistics,
-        sync_content: bool,
-    ) -> bool:
+    ) -> None:
         """
         Retrieve and persist one Gmail message.
         """
 
-        content_processed = False
         connection.execute("SAVEPOINT sync_message")
 
         try:
@@ -333,33 +325,39 @@ class SyncEngine:
                 }
             )
 
-            if sync_content:
-                try:
-                    if self.database_manager.email_content_exists(
+            try:
+                if self.database_manager.email_content_exists(
+                    metadata.gmail_id,
+                    connection=connection,
+                ):
+                    logger.debug(
+                        "Email content already exists. gmail_id=%s",
                         metadata.gmail_id,
-                        connection=connection,
-                    ):
-                        logger.debug(
-                            "Email content already exists. gmail_id=%s",
-                            metadata.gmail_id,
-                        )
-                    else:
-                        content = self.gmail_service.get_message_content(
-                            metadata.gmail_id
-                        )
+                    )
+                else:
+                    content = self.gmail_service.get_message_content(
+                        metadata.gmail_id
+                    )
+
+                    if content.plain_text or content.html_body:
                         self.database_manager.save_email_content(
                             content,
                             connection=connection,
                         )
-                        content_processed = True
+                    else:
+                        logger.debug(
+                            "Skipping email content without extractable "
+                            "body. gmail_id=%s",
+                            metadata.gmail_id,
+                        )
 
-                except Exception as ex:
-                    logger.exception(
-                        "Failed to synchronize Gmail message content. "
-                        "gmail_id=%s error=%s",
-                        metadata.gmail_id,
-                        ex,
-                    )
+            except Exception as ex:
+                logger.exception(
+                    "Failed to synchronize Gmail message content. "
+                    "gmail_id=%s error=%s",
+                    metadata.gmail_id,
+                    ex,
+                )
 
             was_inserted = self._upsert_message(connection, metadata)
 
@@ -379,7 +377,6 @@ class SyncEngine:
 
             connection.execute("RELEASE SAVEPOINT sync_message")
             self._report_progress(statistics)
-            return content_processed
 
         except Exception as ex:
             statistics.failed += 1
@@ -393,7 +390,6 @@ class SyncEngine:
             )
 
             self._report_progress(statistics)
-            return False
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
         """
