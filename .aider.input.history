@@ -1,0 +1,54 @@
+
+# 2026-07-20 15:43:45.566111
++N
+
+# 2026-07-20 15:45:49.531872
++MailCleaner v0.2.2 – Batch 4.1A
++
++Implement ONLY the database layer for email content storage.
++
++Requirements:
++
++1. Modify ONLY:
++   - database.py
++   - models.py
++
++2. Do NOT modify any other files.
++
++3. Preserve all existing functionality.
++
++4. Create a new table named email_content with the following columns:
++
++   - id (INTEGER PRIMARY KEY AUTOINCREMENT)
++   - gmail_id (TEXT UNIQUE NOT NULL)
++   - plain_text (TEXT)
++   - html_body (TEXT)
++   - mime_type (TEXT)
++   - content_size (INTEGER)
++   - extracted_at (TIMESTAMP)
++
++5. Add any required indexes.
++
++6. Add safe migration logic so existing databases are upgraded automatically without affecting existing email metadata.
++
++7. If a data model is required, add it to models.py following the existing project style.
++
++8. Do NOT implement:
++   - Gmail API calls
++   - MIME parsing
++   - Content extraction
++   - Synchronization
++   - Application flow changes
++
++9. Keep the project fully functional after the changes.
++
++When finished, stop. Do not implement future batches.
+
+# 2026-07-20 15:45:59.732352
++Y
+
+# 2026-07-20 15:58:59.339446
++/undo
+
+# 2026-07-20 16:31:17.606289
++/exit

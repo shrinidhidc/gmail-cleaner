@@ -47,6 +47,7 @@ SYNC_STATE_LAST_HISTORY_ID: Final[str] = "last_history_id"
 SYNC_STATE_LAST_SYNC_STARTED_AT: Final[str] = "last_sync_started_at"
 SYNC_STATE_LAST_SYNC_COMPLETED_AT: Final[str] = "last_sync_completed_at"
 SYNC_STATE_LAST_SYNC_MODE: Final[str] = "last_sync_mode"
+CONTENT_SYNC_LIMIT: Final[int] = 10
 
 RETRYABLE_HTTP_STATUSES: Final[set[int]] = {
     429,
@@ -124,6 +125,7 @@ class SyncEngine:
 
         started_at = _utc_now()
         statistics = SyncStatistics()
+        content_sync_count = 0
 
         logger.info("Starting Gmail metadata synchronization.")
         self._report_progress(statistics)
@@ -131,7 +133,9 @@ class SyncEngine:
         self.database_manager.initialize()
         self._connect_gmail()
 
-        with self.database_manager.connect() as connection:
+        connection = self.database_manager.begin_transaction()
+
+        try:
             self._set_sync_state(
                 connection,
                 SYNC_STATE_LAST_SYNC_STARTED_AT,
@@ -148,11 +152,15 @@ class SyncEngine:
                 query=query,
                 page_size=page_size,
             ):
-                self._sync_single_message(
+                content_processed = self._sync_single_message(
                     connection=connection,
                     message_id=message_id,
                     statistics=statistics,
+                    sync_content=content_sync_count < CONTENT_SYNC_LIMIT,
                 )
+
+                if content_processed:
+                    content_sync_count += 1
 
             completed_at = _utc_now()
             self._set_sync_state(
@@ -161,7 +169,14 @@ class SyncEngine:
                 completed_at,
             )
 
-            connection.commit()
+            self.database_manager.commit()
+
+        except Exception:
+            self.database_manager.rollback()
+            raise
+
+        finally:
+            self.database_manager.close()
 
         logger.info(
             "Gmail metadata synchronization completed. "
@@ -285,10 +300,14 @@ class SyncEngine:
         connection: sqlite3.Connection,
         message_id: str,
         statistics: SyncStatistics,
-    ) -> None:
+        sync_content: bool,
+    ) -> bool:
         """
         Retrieve and persist one Gmail message.
         """
+
+        content_processed = False
+        connection.execute("SAVEPOINT sync_message")
 
         try:
             message = self._get_message(message_id)
@@ -314,6 +333,34 @@ class SyncEngine:
                 }
             )
 
+            if sync_content:
+                try:
+                    if self.database_manager.email_content_exists(
+                        metadata.gmail_id,
+                        connection=connection,
+                    ):
+                        logger.debug(
+                            "Email content already exists. gmail_id=%s",
+                            metadata.gmail_id,
+                        )
+                    else:
+                        content = self.gmail_service.get_message_content(
+                            metadata.gmail_id
+                        )
+                        self.database_manager.save_email_content(
+                            content,
+                            connection=connection,
+                        )
+                        content_processed = True
+
+                except Exception as ex:
+                    logger.exception(
+                        "Failed to synchronize Gmail message content. "
+                        "gmail_id=%s error=%s",
+                        metadata.gmail_id,
+                        ex,
+                    )
+
             was_inserted = self._upsert_message(connection, metadata)
 
             statistics.processed += 1
@@ -330,12 +377,14 @@ class SyncEngine:
                     metadata.history_id,
                 )
 
-            connection.commit()
+            connection.execute("RELEASE SAVEPOINT sync_message")
             self._report_progress(statistics)
+            return content_processed
 
         except Exception as ex:
             statistics.failed += 1
-            connection.rollback()
+            connection.execute("ROLLBACK TO SAVEPOINT sync_message")
+            connection.execute("RELEASE SAVEPOINT sync_message")
 
             logger.exception(
                 "Failed to synchronize Gmail message. gmail_id=%s error=%s",
@@ -344,6 +393,7 @@ class SyncEngine:
             )
 
             self._report_progress(statistics)
+            return False
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
         """

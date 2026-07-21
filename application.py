@@ -31,6 +31,7 @@ from database import DatabaseManager
 from gmail_service import GmailService
 from logger import get_logger, setup_logger
 from models import GmailProfile
+from sync_engine import SyncEngine
 
 EXIT_SUCCESS: Final[int] = 0
 EXIT_CONFIGURATION_ERROR: Final[int] = 1
@@ -79,6 +80,12 @@ class Application:
             return EXIT_GMAIL_ERROR
 
         self._display_profile(profile)
+
+        sync_engine = SyncEngine(
+            gmail_service=self.gmail,
+            database_manager=self.database,
+        )
+        sync_engine.sync()
 
         console.success("Application started successfully.")
         logger.info("Application startup completed successfully.")
