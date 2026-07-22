@@ -18,6 +18,11 @@ APPLICATION_VERSION = "0.2.0"
 
 STARTUP_BANNER = "=" * 60
 
+ENABLE_ANALYSIS = True
+ENABLE_SYNC = False
+
+ANALYSIS_LIMIT = 500
+
 # ============================================================================
 # Project Paths
 # ============================================================================

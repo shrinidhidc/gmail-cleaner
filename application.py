@@ -20,17 +20,21 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Final
 
 from google.auth.exceptions import GoogleAuthError
 from googleapiclient.errors import HttpError
 
 import config
+from analysis_engine import AnalysisEngine
 from console import console
 from database import DatabaseManager
 from gmail_service import GmailService
 from logger import get_logger, setup_logger
-from models import GmailProfile
+from models import AnalysisStatistics, GmailProfile
+from rule_engine import RuleEngine
+from statistics_engine import StatisticsEngine
 from sync_engine import SyncEngine
 
 EXIT_SUCCESS: Final[int] = 0
@@ -81,11 +85,17 @@ class Application:
 
         self._display_profile(profile)
 
-        sync_engine = SyncEngine(
-            gmail_service=self.gmail,
-            database_manager=self.database,
-        )
-        sync_engine.sync()
+        if config.ENABLE_SYNC:
+            sync_engine = SyncEngine(
+                gmail_service=self.gmail,
+                database_manager=self.database,
+            )
+            sync_engine.sync()
+        else:
+            console.info("Synchronization skipped (ENABLE_SYNC=False).")
+            logger.info("Synchronization skipped because ENABLE_SYNC=False.")
+
+        self._run_analysis()
 
         console.success("Application started successfully.")
         logger.info("Application startup completed successfully.")
@@ -178,6 +188,120 @@ class Application:
         print(f"Threads      : {profile.threads_total}")
         print(f"History ID   : {profile.history_id}")
         print()
+
+    def _run_analysis(self) -> None:
+        """
+        Run deterministic email analysis when enabled.
+        """
+
+        if not config.ENABLE_ANALYSIS:
+            logger.info("Email analysis is disabled.")
+            return
+
+        try:
+            console.info("Starting email analysis...")
+            logger.info("Starting email analysis.")
+
+            analysis_limit = config.ANALYSIS_LIMIT
+
+            if analysis_limit is None:
+                logger.info("Analysis limit: None (all pending emails)")
+                analysis_limit = self.database.get_total_email_count()
+            else:
+                logger.info("Analysis limit: %s", analysis_limit)
+
+            started_at = perf_counter()
+            analysis_engine = AnalysisEngine(
+                database_manager=self.database,
+                rule_engine=RuleEngine(),
+            )
+            statistics = analysis_engine.analyze_pending_emails(
+                limit=analysis_limit
+            )
+            elapsed_seconds = perf_counter() - started_at
+
+            self._display_analysis_summary(statistics)
+            self._display_mailbox_statistics()
+            logger.info(
+                "Email analysis completed. elapsed_seconds=%.3f "
+                "total_analyzed=%s failures=%s",
+                elapsed_seconds,
+                statistics.analyzed,
+                statistics.failed,
+            )
+
+        except Exception as ex:
+            logger.exception("Email analysis failed.")
+            console.error(f"Email analysis failed: {ex}")
+
+    @staticmethod
+    def _display_analysis_summary(
+        statistics: AnalysisStatistics,
+    ) -> None:
+        """
+        Display email analysis summary information.
+        """
+
+        if statistics.total_selected == 0:
+            console.info("No unanalyzed emails found.")
+            return
+
+        print()
+        console.title("EMAIL ANALYSIS SUMMARY")
+        print(f"Emails Selected : {statistics.total_selected}")
+        print(f"Analyzed        : {statistics.analyzed}")
+        print(f"Classified      : {statistics.classified}")
+        print(f"Unknown         : {statistics.unknown}")
+        print(f"Failed          : {statistics.failed}")
+        console.separator()
+
+    def _display_mailbox_statistics(self) -> None:
+        """
+        Display current mailbox statistics.
+        """
+
+        try:
+            statistics_engine = StatisticsEngine(self.database)
+            mailbox_statistics = statistics_engine.get_mailbox_statistics()
+            category_statistics = statistics_engine.get_category_statistics()
+            sender_domain_statistics = (
+                statistics_engine.get_sender_domain_statistics()
+            )
+            unknown_sender_domains = (
+                statistics_engine.get_unknown_sender_domains()
+            )
+
+            print()
+            console.title("MAILBOX STATISTICS")
+            print(f"Total Emails          : {mailbox_statistics.total_emails}")
+            print(f"Email Content         : {mailbox_statistics.total_content}")
+            print(f"Analysis Records      : {mailbox_statistics.total_analysis}")
+            print(f"Classified            : {mailbox_statistics.classified}")
+            print(f"Unknown               : {mailbox_statistics.unknown}")
+            print(f"Failed Analysis       : {mailbox_statistics.failed_analysis}")
+            print("-" * 60)
+            print("TOP CATEGORIES")
+
+            for category in category_statistics:
+                print(f"{category.category:<20} {category.count}")
+
+            print("-" * 60)
+            print("TOP SENDER DOMAINS")
+
+            for sender_domain in sender_domain_statistics:
+                print(f"{sender_domain.sender_domain:<20} {sender_domain.count}")
+
+            print("-" * 60)
+            print("TOP UNKNOWN DOMAINS")
+
+            for sender_domain in unknown_sender_domains:
+                print(f"{sender_domain.sender_domain:<20} {sender_domain.count}")
+
+            console.separator()
+
+        except Exception as ex:
+            logger.exception("Failed to display mailbox statistics.")
+            console.error(f"Mailbox statistics failed: {ex}")
 
 
 def validate_startup() -> bool:

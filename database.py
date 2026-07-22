@@ -14,7 +14,14 @@ from typing import Any, Callable, Iterable, Mapping, Optional, TypeVar
 
 import config
 from logger import get_logger
-from models import EmailAnalysis, EmailContent, EmailMetadata
+from models import (
+    CategoryStatistics,
+    EmailAnalysis,
+    EmailContent,
+    EmailMetadata,
+    MailboxStatistics,
+    SenderDomainStatistics,
+)
 
 logger = get_logger(__name__)
 
@@ -569,6 +576,37 @@ class DatabaseManager:
 
         return self._execute_read(operation)
 
+    def get_email_content(self, gmail_id: str) -> EmailContent | None:
+        """
+        Return extracted email content by Gmail ID.
+        """
+
+        if not gmail_id:
+            raise ValueError("gmail_id is required.")
+
+        def operation(connection: sqlite3.Connection) -> EmailContent | None:
+            cursor = connection.execute(
+                """
+                SELECT gmail_id, plain_text, html_body, mime_type
+                FROM email_content
+                WHERE gmail_id = ?
+                """,
+                (gmail_id,),
+            )
+            row = cursor.fetchone()
+
+            if row is None:
+                return None
+
+            return EmailContent(
+                gmail_id=str(row["gmail_id"]),
+                plain_text=row["plain_text"] or "",
+                html_body=row["html_body"] or "",
+                mime_type=row["mime_type"] or "",
+            )
+
+        return self._execute_read(operation)
+
     def analysis_exists(self, gmail_id: str) -> bool:
         """
         Return whether email analysis exists by Gmail ID.
@@ -696,6 +734,147 @@ class DatabaseManager:
             )
             row = cursor.fetchone()
             return int(row["total"])
+
+        return self._execute_read(operation)
+
+    def get_mailbox_statistics(self) -> MailboxStatistics:
+        """
+        Return aggregate mailbox statistics.
+        """
+
+        def operation(connection: sqlite3.Connection) -> MailboxStatistics:
+            cursor = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM emails) AS total_emails,
+                    (SELECT COUNT(*) FROM email_content) AS total_content,
+                    (SELECT COUNT(*) FROM email_analysis) AS total_analysis,
+                    (
+                        SELECT COUNT(*)
+                        FROM email_analysis
+                        WHERE category IS NOT NULL
+                          AND category != 'Unknown'
+                    ) AS classified,
+                    (
+                        SELECT COUNT(*)
+                        FROM email_analysis
+                        WHERE category = 'Unknown'
+                    ) AS unknown
+                """
+            )
+            row = cursor.fetchone()
+
+            return MailboxStatistics(
+                total_emails=int(row["total_emails"]),
+                total_content=int(row["total_content"]),
+                total_analysis=int(row["total_analysis"]),
+                classified=int(row["classified"]),
+                unknown=int(row["unknown"]),
+                failed_analysis=0,
+            )
+
+        return self._execute_read(operation)
+
+    def get_category_statistics(self) -> list[CategoryStatistics]:
+        """
+        Return email analysis category counts.
+        """
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> list[CategoryStatistics]:
+            cursor = connection.execute(
+                """
+                SELECT category, COUNT(*) AS count
+                FROM email_analysis
+                WHERE category IS NOT NULL
+                GROUP BY category
+                ORDER BY count DESC, category ASC
+                """
+            )
+
+            return [
+                CategoryStatistics(
+                    category=str(row["category"]),
+                    count=int(row["count"]),
+                )
+                for row in cursor.fetchall()
+            ]
+
+        return self._execute_read(operation)
+
+    def get_sender_domain_statistics(
+        self,
+        limit: int = 25,
+    ) -> list[SenderDomainStatistics]:
+        """
+        Return top analyzed sender domains.
+        """
+
+        if limit <= 0:
+            return []
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> list[SenderDomainStatistics]:
+            cursor = connection.execute(
+                """
+                SELECT sender_domain, COUNT(*) AS count
+                FROM email_analysis
+                WHERE sender_domain IS NOT NULL
+                  AND sender_domain != ''
+                GROUP BY sender_domain
+                ORDER BY count DESC, sender_domain ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+
+            return [
+                SenderDomainStatistics(
+                    sender_domain=str(row["sender_domain"]),
+                    count=int(row["count"]),
+                )
+                for row in cursor.fetchall()
+            ]
+
+        return self._execute_read(operation)
+
+    def get_unknown_sender_domain_statistics(
+        self,
+        limit: int = 25,
+    ) -> list[SenderDomainStatistics]:
+        """
+        Return top sender domains with unknown analysis category.
+        """
+
+        if limit <= 0:
+            return []
+
+        def operation(
+            connection: sqlite3.Connection,
+        ) -> list[SenderDomainStatistics]:
+            cursor = connection.execute(
+                """
+                SELECT sender_domain, COUNT(*) AS count
+                FROM email_analysis
+                WHERE category = 'Unknown'
+                  AND sender_domain IS NOT NULL
+                  AND sender_domain != ''
+                GROUP BY sender_domain
+                ORDER BY count DESC, sender_domain ASC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+
+            return [
+                SenderDomainStatistics(
+                    sender_domain=str(row["sender_domain"]),
+                    count=int(row["count"]),
+                )
+                for row in cursor.fetchall()
+            ]
 
         return self._execute_read(operation)
 

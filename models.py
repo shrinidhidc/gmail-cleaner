@@ -76,6 +76,53 @@ class EmailAnalysis:
 
 
 @dataclass(slots=True)
+class AnalysisStatistics:
+    """
+    Email analysis processing statistics.
+    """
+
+    total_selected: int = 0
+    analyzed: int = 0
+    classified: int = 0
+    unknown: int = 0
+    failed: int = 0
+
+
+@dataclass(slots=True)
+class MailboxStatistics:
+    """
+    Current mailbox analysis counts.
+    """
+
+    total_emails: int = 0
+    total_content: int = 0
+    total_analysis: int = 0
+    classified: int = 0
+    unknown: int = 0
+    failed_analysis: int = 0
+
+
+@dataclass(slots=True)
+class CategoryStatistics:
+    """
+    Email analysis count for one category.
+    """
+
+    category: str
+    count: int
+
+
+@dataclass(slots=True)
+class SenderDomainStatistics:
+    """
+    Email analysis count for one sender domain.
+    """
+
+    sender_domain: str
+    count: int
+
+
+@dataclass(slots=True)
 class SyncStatistics:
     """
     Metadata synchronization statistics.
