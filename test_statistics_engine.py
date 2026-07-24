@@ -86,6 +86,18 @@ def run_tests() -> None:
                 for domain in unknown_sender_domains
             ] == [("example.com", 1)]
 
+            # Test unique sender count
+            assert mailbox_statistics.total_unique_senders == 3
+
+            # Test unique domain count
+            assert mailbox_statistics.total_unique_domains == 2
+
+            # Test top 10 sender domains
+            assert [
+                (domain.sender_domain, domain.count)
+                for domain in mailbox_statistics.top_10_sender_domains
+            ] == [("amazon.in", 2), ("example.com", 1)]
+
         finally:
             config.DATABASE_PATH = original_database_path
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from database import DatabaseManager
 from models import (
-    CategoryStatistics,
     MailboxStatistics,
+    CategoryStatistics,
     SenderDomainStatistics,
 )
 
@@ -27,7 +27,18 @@ class StatisticsEngine:
         Return overall mailbox statistics.
         """
 
-        return self.database_manager.get_mailbox_statistics()
+        mailbox_stats = self.database_manager.get_mailbox_statistics()
+
+        # Compute unique sender count
+        mailbox_stats.total_unique_senders = self.database_manager.get_unique_sender_count()
+
+        # Compute unique domain count
+        mailbox_stats.total_unique_domains = self.database_manager.get_unique_domain_count()
+
+        # Compute top 10 sender domains
+        mailbox_stats.top_10_sender_domains = self.database_manager.get_top_sender_domains(limit=10)
+
+        return mailbox_stats
 
     def get_category_statistics(self) -> list[CategoryStatistics]:
         """
