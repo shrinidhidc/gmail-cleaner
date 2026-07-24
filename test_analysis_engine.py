@@ -18,29 +18,50 @@ def run_tests() -> None:
             database = DatabaseManager()
             database.initialize()
 
+            # Test case 1: "John Doe <john@example.com>"
             database.upsert_email_metadata(
                 EmailMetadata(
-                    gmail_id="github",
-                    sender="notifications@github.com",
-                )
-            )
-            database.upsert_email_metadata(
-                EmailMetadata(
-                    gmail_id="newsletter",
-                    sender="news@example.com",
-                )
-            )
-            database.upsert_email_metadata(
-                EmailMetadata(
-                    gmail_id="unknown",
-                    sender="person@example.com",
-                    subject="Hello",
+                    gmail_id="john-doe",
+                    sender="John Doe <john@example.com>",
                 )
             )
 
+            # Test case 2: "john@example.com"
+            database.upsert_email_metadata(
+                EmailMetadata(
+                    gmail_id="john",
+                    sender="john@example.com",
+                )
+            )
+
+            # Test case 3: "Amazon India <store-news@amazon.in>"
+            database.upsert_email_metadata(
+                EmailMetadata(
+                    gmail_id="amazon",
+                    sender="Amazon India <store-news@amazon.in>",
+                )
+            )
+
+            # Test case 4: Empty sender
+            database.upsert_email_metadata(
+                EmailMetadata(
+                    gmail_id="empty",
+                    sender="",
+                )
+            )
+
+            # Test case 5: Invalid sender string
+            database.upsert_email_metadata(
+                EmailMetadata(
+                    gmail_id="invalid",
+                    sender="invalid-sender",
+                )
+            )
+
+            # Add content for analysis
             database.save_email_content(
                 EmailContent(
-                    gmail_id="newsletter",
+                    gmail_id="john-doe",
                     plain_text="To unsubscribe, use this link.",
                     html_body="",
                     mime_type="text/plain",
@@ -48,8 +69,32 @@ def run_tests() -> None:
             )
             database.save_email_content(
                 EmailContent(
-                    gmail_id="unknown",
+                    gmail_id="john",
                     plain_text="How are you?",
+                    html_body="",
+                    mime_type="text/plain",
+                )
+            )
+            database.save_email_content(
+                EmailContent(
+                    gmail_id="amazon",
+                    plain_text="Welcome to Amazon India!",
+                    html_body="",
+                    mime_type="text/plain",
+                )
+            )
+            database.save_email_content(
+                EmailContent(
+                    gmail_id="empty",
+                    plain_text="",
+                    html_body="",
+                    mime_type="text/plain",
+                )
+            )
+            database.save_email_content(
+                EmailContent(
+                    gmail_id="invalid",
+                    plain_text="Invalid sender",
                     html_body="",
                     mime_type="text/plain",
                 )
@@ -58,22 +103,29 @@ def run_tests() -> None:
             engine = AnalysisEngine(database, RuleEngine())
             statistics = engine.analyze_pending_emails()
 
-            assert statistics.total_selected == 3
-            assert statistics.analyzed == 3
-            assert statistics.classified == 2
+            assert statistics.total_selected == 5
+            assert statistics.analyzed == 5
+            assert statistics.classified == 4
             assert statistics.unknown == 1
             assert statistics.failed == 0
 
-            github_analysis = database.get_email_analysis("github")
-            newsletter_analysis = database.get_email_analysis("newsletter")
-            unknown_analysis = database.get_email_analysis("unknown")
+            # Verify sender domain parsing
+            john_doe_analysis = database.get_email_analysis("john-doe")
+            john_analysis = database.get_email_analysis("john")
+            amazon_analysis = database.get_email_analysis("amazon")
+            empty_analysis = database.get_email_analysis("empty")
+            invalid_analysis = database.get_email_analysis("invalid")
 
-            assert github_analysis is not None
-            assert github_analysis.category == "Development"
-            assert newsletter_analysis is not None
-            assert newsletter_analysis.category == "Newsletter"
-            assert unknown_analysis is not None
-            assert unknown_analysis.category == "Unknown"
+            assert john_doe_analysis is not None
+            assert john_doe_analysis.sender_domain == "example.com"
+            assert john_analysis is not None
+            assert john_analysis.sender_domain == "example.com"
+            assert amazon_analysis is not None
+            assert amazon_analysis.sender_domain == "amazon.in"
+            assert empty_analysis is not None
+            assert empty_analysis.sender_domain == ""
+            assert invalid_analysis is not None
+            assert invalid_analysis.sender_domain == ""
 
         finally:
             config.DATABASE_PATH = original_database_path

@@ -47,7 +47,14 @@ class AnalysisEngine:
                 content = self.database_manager.get_email_content(
                     metadata.gmail_id
                 )
+
+                # Parse sender and extract domain
+                sender = metadata.sender
+                parsed_sender = parse_sender(sender)
+                domain = parsed_sender.domain
+
                 analysis = self.rule_engine.analyze(metadata, content)
+                analysis.sender_domain = domain
 
                 logger.info(
                     "Classification completed. gmail_id=%s category=%s",
