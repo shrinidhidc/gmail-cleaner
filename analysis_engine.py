@@ -10,6 +10,7 @@ from database import DatabaseManager
 from logger import get_logger
 from models import AnalysisStatistics
 from rule_engine import RuleEngine
+from sender_utils import parse_sender  # <-- Added import
 
 logger = get_logger(__name__)
 
