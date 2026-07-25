@@ -878,6 +878,24 @@ class DatabaseManager:
 
         return self._execute_read(operation)
 
+    def get_unique_sender_count(self) -> int:
+        """
+        Return the total number of unique senders found in emails.
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            cursor = connection.execute(
+                """
+                SELECT COUNT(DISTINCT sender)
+                FROM emails
+                WHERE sender IS NOT NULL AND sender != ''
+                """
+            )
+            row = cursor.fetchone()
+            return int(row[0])
+
+        return self._execute_read(operation)
+
     def begin_transaction(self) -> sqlite3.Connection:
         """
         Begin an explicit database transaction.
