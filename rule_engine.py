@@ -57,6 +57,7 @@ class RuleEngine:
             importance="Unknown",
             confidence=0.0,
             has_unsubscribe=0,
+            has_attachment=0,
             has_html=has_html,
         )
 
@@ -184,7 +185,7 @@ class RuleEngine:
             category=category,
             importance=importance,
             has_unsubscribe=has_unsubscribe,
-            has_attachment=0,
+            has_attachment=has_attachment,
             has_html=has_html,
             confidence=confidence,
             analyzed_by=RULE_ENGINE_NAME,

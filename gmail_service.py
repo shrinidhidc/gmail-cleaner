@@ -237,10 +237,12 @@ class GmailService:
                 )
                 payload = {}
 
-            plain_text, html_body = self._extract_message_content(payload)
+            plain_text, html_body, attachment_count = self._extract_message_content(payload)
 
+            # Note: EmailContent does not have a field for attachments.
+            # We rely on the calling service (AnalysisEngine) to use this count.
             content = EmailContent(
-                gmail_id=str(message.get("id", message_id)),
+                gmail_id=str(message.get("id", message_id")),
                 plain_text=plain_text,
                 html_body=html_body,
                 mime_type=str(payload.get("mimeType", "")),
@@ -365,9 +367,11 @@ class GmailService:
 
         plain_text_parts: list[str] = []
         html_parts: list[str] = []
+        attachment_count: list[int] = [0]
 
         def visit_part(part: dict[str, Any]) -> None:
             if cls._is_attachment(part):
+                attachment_count[0] += 1
                 return
 
             parts = part.get("parts", [])
@@ -395,7 +399,7 @@ class GmailService:
 
         visit_part(payload)
 
-        return "\n".join(plain_text_parts), "\n".join(html_parts)
+        return "\n".join(plain_text_parts), "\n".join(html_parts), attachment_count[0]
 
     @staticmethod
     def _is_attachment(part: dict[str, Any]) -> bool:
