@@ -31,6 +31,7 @@ class RuleEngine:
 
         sender_domain = self._extract_sender_domain(metadata.sender)
         has_html = int(bool(content and content.html_body))
+        has_attachment = int(bool(content and content.attachment_count))
 
         for match in (
             self._match_sender(metadata),
@@ -47,6 +48,7 @@ class RuleEngine:
                     importance=importance,
                     confidence=confidence,
                     has_unsubscribe=has_unsubscribe,
+                    has_attachment=has_attachment,
                     has_html=has_html,
                 )
 
@@ -57,7 +59,7 @@ class RuleEngine:
             importance="Unknown",
             confidence=0.0,
             has_unsubscribe=0,
-            has_attachment=0,
+            has_attachment=has_attachment,
             has_html=has_html,
         )
 
@@ -173,6 +175,7 @@ class RuleEngine:
         importance: str,
         confidence: float,
         has_unsubscribe: int,
+        has_attachment: int,
         has_html: int,
     ) -> EmailAnalysis:
         """

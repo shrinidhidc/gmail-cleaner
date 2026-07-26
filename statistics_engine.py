@@ -30,13 +30,13 @@ class StatisticsEngine:
         mailbox_stats = self.database_manager.get_mailbox_statistics()
 
         # Compute unique sender count
-        mailbox_stats.total_unique_senders = self.database_manager.get_unique_sender_count()
+        mailbox_stats.total_unique_senders = ... # self.database_manager.get_unique_sender_count()
 
         # Compute unique domain count
-        mailbox_stats.total_unique_domains = self.database_manager.get_unique_domain_count()
+        mailbox_stats.total_unique_domains = ... # self.database_manager.get_unique_domain_count()
 
         # Compute top 10 sender domains
-        mailbox_stats.top_10_sender_domains = self.database_manager.get_top_sender_domains(limit=10)
+        mailbox_stats.top_10_sender_domains = ... #  self.database_manager.get_top_sender_domains(limit=10)
 
         return mailbox_stats
 

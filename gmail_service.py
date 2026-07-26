@@ -239,14 +239,13 @@ class GmailService:
 
             plain_text, html_body, attachment_count = self._extract_message_content(payload)
 
-            # Note: EmailContent does not have a field for attachments.
-            # We rely on the calling service (AnalysisEngine) to use this count.
+            # EmailContent stores the attachment count extracted from the Gmail message.
             content = EmailContent(
-                gmail_id=str(message.get("id", message_id")),
+                gmail_id=str(message.get("id", "message_id")),
                 plain_text=plain_text,
                 html_body=html_body,
                 mime_type=str(payload.get("mimeType", "")),
-                attachment_count=attachment_count,
+                attachment_count=attachment_count
             )
 
             logger.debug(

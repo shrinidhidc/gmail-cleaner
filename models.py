@@ -55,7 +55,7 @@ class EmailContent:
     plain_text: str
     html_body: str
     mime_type: str
-
+    attachment_count: int = 0
 
 @dataclass(slots=True)
 class EmailAnalysis:
@@ -100,7 +100,9 @@ class MailboxStatistics:
     classified: int = 0
     unknown: int = 0
     failed_analysis: int = 0
-
+    total_unique_senders: int = 0
+    total_unique_domains: int = 0
+    top_10_sender_domains: list[SenderDomainStatistics] | None = None
 
 @dataclass(slots=True)
 class CategoryStatistics:
