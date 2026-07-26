@@ -246,6 +246,7 @@ class GmailService:
                 plain_text=plain_text,
                 html_body=html_body,
                 mime_type=str(payload.get("mimeType", "")),
+                attachment_count=attachment_count,
             )
 
             logger.debug(
